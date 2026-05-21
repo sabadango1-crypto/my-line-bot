@@ -1,7 +1,7 @@
 import os
 import sys
 import random
-import requests  # 👈 安定して通信するための部品
+import requests
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -16,10 +16,10 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = Flask(__name__)
 
-# 環境変数から各鍵を取得
-channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
-channel_access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
-gemini_api_key = os.environ.get('GEMINI_API_KEY')
+# 👈 Renderの設定に合わせて、小文字でも大文字でもどちらでも読み込めるように対策しました！
+channel_secret = os.environ.get('line_channel_secret') or os.environ.get('LINE_CHANNEL_SECRET')
+channel_access_token = os.environ.get('line_channel_access_token') or os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
+gemini_api_key = os.environ.get('gemini_api_key') or os.environ.get('GEMINI_API_KEY')
 
 if channel_secret is None or channel_access_token is None:
     print('Specify LINE_CHANNEL_SECRET and LINE_CHANNEL_ACCESS_TOKEN as environment variables.')
@@ -54,11 +54,9 @@ def callback():
 def handle_message(event):
     user_message = event.message.text
     
-    # 1. 内部でタロットカードと位置をランダムに決定
     card = random.choice(TAROT_CARDS)
     position = random.choice(["正位置", "逆位置"])
     
-    # 2. Geminiへの指示書（プロンプト）
     prompt = f"""
     あなたは親切で当たると評判のプロのタロット占い師です。
     ユーザーから以下のお悩みや相談が届きました。
@@ -75,11 +73,9 @@ def handle_message(event):
     ・全体の文章量は250文字〜400文字程度にまとめ、LINEで見やすいよう適度に改行を入れてください。
     """
     
-    # Gemini APIキーがない場合のバックアップ
     if not gemini_api_key:
-        reply_text = f"🔮タロット占いの結果🔮\n\n引いたカードは【 {card} の {position} 】です！\n\n※Renderの環境変数（GEMINI_API_KEY）が設定されていないため、カード名のみお伝えしています。"
+        reply_text = f"🔮タロット占いの結果🔮\n\n引いたカードは【 {card} の {position} 】です！\n\n※GeminiのAPIキーが読み込めないため、カード名のみお伝えしています。"
     else:
-        # 3. 専用のライブラリを使わず、直接URLを通してGeminiに依頼する（超安定ルート）
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
         headers = {"Content-Type": "application/json"}
         payload = {
@@ -91,14 +87,11 @@ def handle_message(event):
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             response_data = response.json()
-            
-            # Geminiから返ってきたテキストを抜き出す
             reply_text = response_data['candidates'][0]['content']['parts'][0]['text']
         except Exception as e:
             app.logger.error(f"Gemini API Direct Error: {e}")
             reply_text = "占い師AIとの通信でエラーが発生しました。少し時間を置いてもう一度試してみてね。"
 
-    # LINEに返事を送る
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message_with_http_info(
