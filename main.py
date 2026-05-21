@@ -1,8 +1,8 @@
 import os
 import sys
 import random
+import requests  # 👈 安定して通信するための部品
 from flask import Flask, request, abort
-from google import genai  # 👈 Geminiの新しいライブラリ
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -19,7 +19,7 @@ app = Flask(__name__)
 # 環境変数から各鍵を取得
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
 channel_access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
-gemini_api_key = os.environ.get('GEMINI_API_KEY')  # 👈 Geminiの鍵
+gemini_api_key = os.environ.get('GEMINI_API_KEY')
 
 if channel_secret is None or channel_access_token is None:
     print('Specify LINE_CHANNEL_SECRET and LINE_CHANNEL_ACCESS_TOKEN as environment variables.')
@@ -27,11 +27,6 @@ if channel_secret is None or channel_access_token is None:
 
 handler = WebhookHandler(channel_secret)
 configuration = Configuration(access_token=channel_access_token)
-
-# Geminiクライアントの初期化（キーがあれば有効化）
-gemini_client = None
-if gemini_api_key:
-    gemini_client = genai.Client(api_key=gemini_api_key)
 
 # 22枚の大アルカナカードのリスト
 TAROT_CARDS = [
@@ -59,41 +54,49 @@ def callback():
 def handle_message(event):
     user_message = event.message.text
     
-    # Geminiの準備ができていない場合は、通常のメッセージを返す
-    if not gemini_client:
-        reply_text = "占い師（Gemini）の準備ができていません。環境変数を確認してください。"
+    # 1. 内部でタロットカードと位置をランダムに決定
+    card = random.choice(TAROT_CARDS)
+    position = random.choice(["正位置", "逆位置"])
+    
+    # 2. Geminiへの指示書（プロンプト）
+    prompt = f"""
+    あなたは親切で当たると評判のプロのタロット占い師です。
+    ユーザーから以下のお悩みや相談が届きました。
+    
+    【ユーザーの相談】: {user_message}
+    
+    あなたが引いたタロットカードは【 {card} の {position} 】です。
+    
+    以下の条件を必ず守って、ユーザーへの鑑定結果・アドバイスを作成してください。
+    ・文頭は「🔮タロット占いの結果をお伝えします🔮」から始めてください。
+    ・引いたカードの名前と向きを明記してください。
+    ・そのカードが持つ一般的な意味を、今回の相談内容に絡めて優しく解説してください。
+    ・最後には、ユーザーが一歩踏み出せるような具体的なアドバイスや応援の言葉で締めくくってください。
+    ・全体の文章量は250文字〜400文字程度にまとめ、LINEで見やすいよう適度に改行を入れてください。
+    """
+    
+    # Gemini APIキーがない場合のバックアップ
+    if not gemini_api_key:
+        reply_text = f"🔮タロット占いの結果🔮\n\n引いたカードは【 {card} の {position} 】です！\n\n※Renderの環境変数（GEMINI_API_KEY）が設定されていないため、カード名のみお伝えしています。"
     else:
-        # 1. 内部でタロットカードと位置をランダムに決定
-        card = random.choice(TAROT_CARDS)
-        position = random.choice(["正位置", "逆位置"])
-        
-        # 2. Geminiに送るための指示書（プロンプト）を作成
-        prompt = f"""
-        あなたは親切で当たると評判のプロのタロット占い師です。
-        ユーザーから以下のお悩みや相談が届きました。
-        
-        【ユーザーの相談】: {user_message}
-        
-        あなたが引いたタロットカードは【 {card} の {position} 】です。
-        
-        以下の条件を必ず守って、ユーザーへの鑑定結果・アドバイスを作成してください。
-        ・文頭は「🔮タロット占いの結果をお伝えします🔮」から始めてください。
-        ・引いたカードの名前と向きを明記してください。
-        ・そのカードが持つ一般的な意味を、今回の相談内容に絡めて優しく解説してください。
-        ・最後には、ユーザーが一歩踏み出せるような具体的なアドバイスや応援の言葉で締めくくってください。
-        ・全体の文章量は250文字〜400文字程度にまとめ、LINEで見やすいよう適度に改行を入れてください。
-        """
+        # 3. 専用のライブラリを使わず、直接URLを通してGeminiに依頼する（超安定ルート）
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }]
+        }
         
         try:
-            # 3. Geminiに鑑定文を作ってもらう
-            response = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-            )
-            reply_text = response.text
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response_data = response.json()
+            
+            # Geminiから返ってきたテキストを抜き出す
+            reply_text = response_data['candidates'][0]['content']['parts'][0]['text']
         except Exception as e:
-            app.logger.error(f"Gemini API Error: {e}")
-            reply_text = "占い中にエラーが発生しました。少し時間を置いてもう一度話しかけてね。"
+            app.logger.error(f"Gemini API Direct Error: {e}")
+            reply_text = "占い師AIとの通信でエラーが発生しました。少し時間を置いてもう一度試してみてね。"
 
     # LINEに返事を送る
     with ApiClient(configuration) as api_client:
